@@ -1,6 +1,6 @@
 # Opportunity Ops
 
-Opportunity Ops is an original Taskmaster-track vertical slice for the All Things Agentic Hackathon. It turns a messy opportunity source into structured facts, a fit-scored execution plan, a generated artifact, and an independent evidence report.
+Opportunity Ops is an original Taskmaster-track vertical slice. It turns a messy opportunity source into structured facts, a fit-scored execution plan, a generated artifact, and an independent evidence report.
 
 ## Current vertical slice
 
