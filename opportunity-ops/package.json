@@ -1,0 +1,26 @@
+{
+  "name": "opportunity-ops",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A verifiable autonomous opportunity execution agent vertical slice.",
+  "scripts": {
+    "demo": "tsx --env-file-if-exists=.env src/demo.ts",
+    "evaluate": "tsx --env-file-if-exists=.env src/evaluate.ts",
+    "rehearse": "tsx --env-file-if-exists=.env src/rehearse.ts",
+    "serve": "tsx --env-file-if-exists=.env src/server.ts",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@google-cloud/firestore": "^9.0.0",
+    "@google-cloud/storage": "^8.0.1",
+    "@google/genai": "^2.19.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

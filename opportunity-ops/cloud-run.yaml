@@ -1,0 +1,33 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: opportunity-ops
+spec:
+  template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      containers:
+        - image: REGION-docker.pkg.dev/PROJECT/opportunity-ops/api:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: GOOGLE_CLOUD_PROJECT
+              value: PROJECT
+            - name: GEMINI_MODEL
+              value: gemini-3.5-flash
+            - name: EXTRACTOR
+              value: gemini
+            - name: GEMINI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gemini-api-key
+                  key: latest
+          startupProbe:
+            httpGet:
+              path: /healthz
+            initialDelaySeconds: 2
+            timeoutSeconds: 3
+            periodSeconds: 5
+            failureThreshold: 12
