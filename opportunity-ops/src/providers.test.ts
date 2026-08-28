@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { GeminiApiProvider, VertexGeminiProvider, createOpportunityExtractor } from './providers.js'
+import { DEFAULT_GEMINI_MODEL, GeminiApiProvider, MINIMUM_GEMINI_GENERATION, VertexGeminiProvider, applicationDefaultTokenProvider, assertGeminiCompliance, createOpportunityExtractor, geminiGeneration } from './providers.js'
 import { runOpportunity } from './agent.js'
 import type { SourceSnapshot, UserProfile } from './domain.js'
 
@@ -77,4 +77,104 @@ test('model transport failures fail the run closed instead of proceeding unverif
   assert.equal(run.status, 'failed')
   assert.match(String(run.events.find(event => event.type === 'RUN_FAILED')?.data?.error), /quota exhausted/)
   assert.equal(run.evidence.length, 0)
+})
+
+test('a pre-3.5 Gemini model is rejected on both production paths', async () => {
+  assert.equal(MINIMUM_GEMINI_GENERATION, 3.5)
+  assert.equal(geminiGeneration('gemini-2.5-flash'), 2.5)
+  assert.equal(geminiGeneration('gemini-1.5-pro'), 1.5)
+  assert.equal(geminiGeneration('gemini-3.5-flash'), 3.5)
+  assert.equal(geminiGeneration('gemini-4-pro'), 4)
+  // Aliases we cannot rank pass the runtime gate; deployment.test.ts scans committed config instead.
+  assert.equal(geminiGeneration('gemini-test'), undefined)
+  assert.ok((geminiGeneration(DEFAULT_GEMINI_MODEL) ?? 0) >= MINIMUM_GEMINI_GENERATION)
+
+  for (const stale of ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro']) {
+    assert.throws(() => assertGeminiCompliance(stale), /requires Gemini 3\.5 or newer/)
+    assert.throws(() => new VertexGeminiProvider({ project: 'p', token: 't', model: stale }), /requires Gemini 3\.5 or newer/)
+    assert.throws(() => new GeminiApiProvider({ apiKey: 'k', model: stale }), /requires Gemini 3\.5 or newer/)
+  }
+  assert.doesNotThrow(() => new VertexGeminiProvider({ project: 'p', token: 't', model: 'gemini-3.5-flash' }))
+  assert.doesNotThrow(() => new VertexGeminiProvider({ project: 'p', token: 't', model: 'gemini-4-pro' }))
+})
+
+test('Vertex defaults to a compliant model and a stale GEMINI_MODEL cannot downgrade it', async () => {
+  const previous = process.env.GEMINI_MODEL
+  try {
+    delete process.env.GEMINI_MODEL
+    let url: string | undefined
+    const provider = new VertexGeminiProvider({ project: 'p', token: 't', fetchImpl: async input => {
+      url = new Request(input, { method: 'POST', body: '{}' }).url
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] } }] }))
+    } })
+    const result = await provider.generate({ agent: 'scout', instruction: 'x', context: 'y' })
+    assert.equal(result.model, DEFAULT_GEMINI_MODEL)
+    assert.match(url!, /\/models\/gemini-3\.5-flash:generateContent$/)
+
+    process.env.GEMINI_MODEL = 'gemini-2.5-flash'
+    assert.throws(() => new VertexGeminiProvider({ project: 'p', token: 't' }), /requires Gemini 3\.5 or newer/)
+    assert.throws(() => new GeminiApiProvider({ apiKey: 'k' }), /requires Gemini 3\.5 or newer/)
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_MODEL
+    else process.env.GEMINI_MODEL = previous
+  }
+})
+
+test('Vertex mints a short-lived token per request and never stores credentials', async () => {
+  let minted = 0
+  const bearers: (string | null)[] = []
+  const provider = new VertexGeminiProvider({
+    project: 'p',
+    tokenProvider: async () => { minted += 1; return `metadata-token-${minted}` },
+    fetchImpl: async (input, init) => {
+      bearers.push(new Request(input, init).headers.get('authorization'))
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] } }] }))
+    },
+  })
+  await provider.generate({ agent: 'scout', instruction: 'x', context: 'y' })
+  await provider.generate({ agent: 'scout', instruction: 'x', context: 'y' })
+  // A fresh token each call is what makes metadata-server rotation work.
+  assert.deepEqual(bearers, ['Bearer metadata-token-1', 'Bearer metadata-token-2'])
+  assert.equal(minted, 2)
+})
+
+test('Vertex fails closed with a clear error when credentials cannot be obtained', async () => {
+  let fetched = false
+  const provider = new VertexGeminiProvider({
+    project: 'p',
+    tokenProvider: async () => { throw new Error('metadata server unreachable') },
+    fetchImpl: async () => { fetched = true; return new Response('{}') },
+  })
+  await assert.rejects(() => provider.generate({ agent: 'scout', instruction: 'x', context: 'y' }), /metadata server unreachable/)
+  // No unauthenticated request may leave the process.
+  assert.equal(fetched, false)
+
+  const run = await runOpportunity(snapshot, profile, undefined, { extract: createOpportunityExtractor(provider) })
+  assert.equal(run.status, 'failed')
+  assert.equal(run.evidence.length, 0)
+  assert.ok(!run.events.some(event => event.type === 'ACTION_EXECUTED'))
+})
+
+test('GOOGLE_ACCESS_TOKEN stays a local override and ADC is the default provider', async () => {
+  const previous = process.env.GOOGLE_ACCESS_TOKEN
+  try {
+    process.env.GOOGLE_ACCESS_TOKEN = 'local-dev-token'
+    let bearer: string | null = null
+    const provider = new VertexGeminiProvider({ project: 'p', fetchImpl: async (input, init) => {
+      bearer = new Request(input, init).headers.get('authorization')
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: '{}' }] } }] }))
+    } })
+    await provider.generate({ agent: 'scout', instruction: 'x', context: 'y' })
+    assert.equal(bearer, 'Bearer local-dev-token')
+  } finally {
+    if (previous === undefined) delete process.env.GOOGLE_ACCESS_TOKEN
+    else process.env.GOOGLE_ACCESS_TOKEN = previous
+  }
+  // With no token configured the provider resolves credentials lazily through ADC.
+  assert.equal(typeof applicationDefaultTokenProvider(), 'function')
+})
+
+test('Vertex still requires an explicit project before it attempts any credential work', async () => {
+  const provider = new VertexGeminiProvider({ project: undefined, tokenProvider: async () => { throw new Error('should not resolve credentials') } })
+  await assert.rejects(() => provider.generate({ agent: 'scout', instruction: 'x', context: 'y' }), /GOOGLE_CLOUD_PROJECT/)
 })

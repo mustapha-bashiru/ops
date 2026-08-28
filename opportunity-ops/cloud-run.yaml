@@ -8,6 +8,11 @@ spec:
       annotations:
         run.googleapis.com/execution-environment: gen2
     spec:
+      # Workload identity is the only credential path. Grant this service account
+      # roles/aiplatform.user; the container reads a short-lived token from the
+      # metadata server via Application Default Credentials. No API key or access
+      # token is stored in this manifest, in source, or in the image.
+      serviceAccountName: opportunity-ops@PROJECT.iam.gserviceaccount.com
       containers:
         - image: REGION-docker.pkg.dev/PROJECT/opportunity-ops/api:latest
           ports:
@@ -15,15 +20,14 @@ spec:
           env:
             - name: GOOGLE_CLOUD_PROJECT
               value: PROJECT
+            - name: GOOGLE_CLOUD_LOCATION
+              value: REGION
+            - name: MODEL_MODE
+              value: vertex
             - name: GEMINI_MODEL
               value: gemini-3.5-flash
             - name: EXTRACTOR
               value: gemini
-            - name: GEMINI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: gemini-api-key
-                  key: latest
           startupProbe:
             httpGet:
               path: /healthz
