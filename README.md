@@ -57,50 +57,53 @@ Remove-Item Env:REHEARSAL_OUTPUT
 
 ## Cloud Run rehearsal
 
-The repository includes a production-shaped container contract. The image listens on Cloud Run's `PORT` (defaulting to `3000` locally), exposes `8080`, and provides `GET /healthz` for startup probing. Validate the contract without cloud credentials:
+The repository includes a production-shaped container contract. The image listens on Cloud Run's `PORT` (defaulting to `3000` when `PORT` is unset), exposes `8080`, and provides `GET /healthz` for startup probing. Validate the contract without cloud credentials:
 
 ```powershell
 docker build -t opportunity-ops:local .
 docker run --rm -p 8080:8080 -e PORT=8080 opportunity-ops:local
 ```
 
-In another terminal, request `http://localhost:8080/healthz`, then open `http://localhost:8080`. The manifest uses placeholders intentionally. Replace `PROJECT`, `REGION`, and the image reference before deploying, and use a Cloud Run service account with workload identity rather than a long-lived access token. The local server's in-memory mode is suitable for the demo; production should set `PERSISTENCE=cloud` and `OPPORTUNITY_OPS_BUCKET`.
+In another terminal, request `http://localhost:8080/healthz`, then open `http://localhost:8080`. The manifest uses placeholders intentionally. Replace `PROJECT`, `REGION`, the image reference, and the `serviceAccountName` placeholder before deploying; the manifest already authenticates through workload identity rather than a long-lived access token. `PERSISTENCE=memory` (the `.env.example` value) is suitable for the demo; production should set `PERSISTENCE=cloud` and `OPPORTUNITY_OPS_BUCKET`.
 
 ## Judge UI
 
-Run `npm run serve`, open <http://localhost:3000>, enter a reachable opportunity URL, and use **Run verified path**. The page fetches and sanitizes the URL through the bounded ingestion layer, then shows live-source provenance, cited evidence, conflict details, replayable audit timeline, and a downloadable verified submission package. Leave the URL empty to use the editable offline snapshot. The package includes an executive summary, a “Why this can win” argument, the agent architecture, demo script, judging-criteria map, milestone plan, and citations. Blocked runs never receive a package link. For the strongest rehearsal, demonstrate both the verified path and the **Seed deadline conflict** path: the latter proves that the verifier blocks execution before an unsafe action. This is intentionally local and credential-free; it is the presentation layer to put in front of judges before adding cloud persistence.
+Run `npm run serve` and open the URL it prints on startup: `http://localhost:3002` with the committed `.env.example`, which sets `PORT=3002`, or `http://localhost:3000` when `PORT` is unset. Enter a reachable opportunity URL and use **Run verified path**. The page fetches and sanitizes the URL through the bounded ingestion layer, then shows live-source provenance, cited evidence, conflict details, replayable audit timeline, and a downloadable verified submission package. Leave the URL empty to use the editable offline snapshot. The package includes an executive summary, a “Why this can win” argument, the agent architecture, demo script, judging-criteria map, milestone plan, and citations. Blocked runs never receive a package link. For the strongest rehearsal, demonstrate both the verified path and the **Seed deadline conflict** path: the latter proves that the verifier blocks execution before an unsafe action. This is intentionally local and credential-free; it is the presentation layer to put in front of judges before adding cloud persistence.
 
-If you see `EADDRINUSE`, an older server is still using port 3000. Stop that terminal/process, then start the server again and hard-refresh the browser (`Ctrl+F5`). To avoid the occupied port, use ` $env:PORT=3001; npm run serve ` and open <http://localhost:3001>. The UI reports parser/API errors in the result panel rather than silently ignoring a click. The current local fixture format expects `title:` and `deadline:` lines; use the CLI `SOURCE_URL` path for live web ingestion until the browser ingestion adapter is added.
+If you see `EADDRINUSE`, an older server is still holding that port. Stop that terminal/process, then start the server again and hard-refresh the browser (`Ctrl+F5`). To sidestep an occupied port, pick another one — ` $env:PORT=3005; npm run serve ` — and open the URL the server prints. The UI reports parser/API errors in the result panel rather than silently ignoring a click. The current local fixture format expects `title:` and `deadline:` lines; use the CLI `SOURCE_URL` path for live web ingestion until the browser ingestion adapter is added.
 
-For the opt-in model path, first provide Google Application Default Credentials or a short-lived access token, then run:
+For the opt-in Vertex path, credentials come from Application Default Credentials — `gcloud auth application-default login` locally, or the attached service account on Cloud Run. `GOOGLE_ACCESS_TOKEN` stays available as an optional local override when you already hold a short-lived token:
 
 ```powershell
 $env:GOOGLE_CLOUD_PROJECT = 'your-project-id'
-$env:GOOGLE_ACCESS_TOKEN = 'short-lived-token'
 $env:MODEL_MODE = 'vertex'
 $env:SOURCE_URL = 'https://a-real-reachable-opportunity-url'
 npm run demo
-Remove-Item Env:GOOGLE_CLOUD_PROJECT, Env:GOOGLE_ACCESS_TOKEN, Env:MODEL_MODE, Env:SOURCE_URL
+Remove-Item Env:GOOGLE_CLOUD_PROJECT, Env:MODEL_MODE, Env:SOURCE_URL
 ```
 
-The Vertex path is deliberately opt-in and schema-validates Gemini output before the local planner uses it. For Cloud Run, replace the temporary token flow with workload identity and a Google ADK runner.
+The Vertex path is deliberately opt-in and schema-validates Gemini output before the local planner uses it. It requires a billed Google Cloud project, so the local demo and the recorded walkthrough use the Gemini Developer API key path below instead. A Google ADK runner remains an interface rather than an implementation.
 
 ## Gemini extraction
 
 Extraction has two interchangeable implementations behind the same `extract` hook on `runOpportunity`:
 
-| `EXTRACTOR` | Extractor | Credentials |
+| Selector | Extractor | Credentials |
 | --- | --- | --- |
-| unset (default) | deterministic regex over the sanitized snapshot | none |
-| `gemini` | `GeminiApiProvider` — Gemini Developer API | `GEMINI_API_KEY` |
-| `gemini` + `MODEL_MODE=vertex` | `VertexGeminiProvider` — Vertex AI REST | `GOOGLE_CLOUD_PROJECT` + `GOOGLE_ACCESS_TOKEN` |
+| `EXTRACTOR` unset (default) | deterministic regex over the sanitized snapshot | none |
+| `EXTRACTOR=gemini` | `GeminiApiProvider` — Gemini Developer API | `GEMINI_API_KEY` |
+| `MODEL_MODE=vertex` | `VertexGeminiProvider` — Vertex AI REST | `GOOGLE_CLOUD_PROJECT` + Application Default Credentials |
+
+`MODEL_MODE=vertex` routes extraction through a model on its own; it does not also need `EXTRACTOR=gemini`. `GEMINI_MODEL` selects the model in both cases and must name Gemini 3.5 or newer — each provider rejects an older generation when it is constructed, so a stale value cannot silently downgrade a run. The default is `gemini-3.5-flash`.
 
 `npm run demo` and `npm run serve` read `.env` (see `.env.example`) and honor `EXTRACTOR`. `npm run evaluate` and `npm run rehearse` stay deterministic on purpose so the judge scorecard remains reproducible.
 
 ```powershell
 $env:EXTRACTOR = 'gemini'
+$env:GEMINI_API_KEY = 'your-ai-studio-key'
 $env:SOURCE_URL = 'https://a-real-reachable-opportunity-url'
 npm run demo
+Remove-Item Env:EXTRACTOR, Env:GEMINI_API_KEY, Env:SOURCE_URL
 ```
 
 Two properties hold regardless of which extractor runs:
@@ -120,14 +123,15 @@ The practical consequence: a model-extracted deadline only reaches an action whe
 - Cloud Scheduler for opportunity refresh.
 - Cloud Logging/Trace and OpenTelemetry-compatible events for the audit timeline.
 
-`src/providers.ts` now contains a real Vertex AI REST adapter and a Gemini Developer API adapter, plus interfaces for a Google ADK runner, Firestore-backed `RunStore`, and Pub/Sub-backed `WorkQueue`. Set `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_MODEL`, and a short-lived `GOOGLE_ACCESS_TOKEN` to exercise the Vertex adapter. The local demo calls no model unless `EXTRACTOR=gemini` is set. `cloud-run.yaml` is a deployment starting point; replace `PROJECT` and `REGION`, create the `gemini-api-key` secret it references (or switch to `MODEL_MODE=vertex` with workload identity), build an image, and use workload identity in deployment rather than a long-lived token.
+`src/providers.ts` now contains a real Vertex AI REST adapter and a Gemini Developer API adapter, plus interfaces for a Google ADK runner, Firestore-backed `RunStore`, and Pub/Sub-backed `WorkQueue`. Set `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION`, and `GEMINI_MODEL` to exercise the Vertex adapter; credentials resolve through Application Default Credentials, with `GOOGLE_ACCESS_TOKEN` as an optional local override. The local demo calls no model unless `EXTRACTOR=gemini` or `MODEL_MODE=vertex` is set.
 
+`cloud-run.yaml` deploys the Vertex path under workload identity and carries no API key, secret reference, or access token. To use it: replace `PROJECT` and `REGION`, replace the `serviceAccountName` placeholder with a real service account, grant that account `roles/aiplatform.user`, and build an image. Deploying it needs a billed project, which is why the current demo path is the Gemini Developer API key instead.
 
 ## Persistence
 
 Runs can persist their immutable source snapshot and generated artifacts in Cloud Storage, while the complete run aggregate (status, plan, evidence, approvals, and replayable events) is stored in Firestore. The adapters use Google Cloud client libraries and Application Default Credentials, so Cloud Run should use its service account/workload identity rather than a long-lived key.
 
-The default mode is in-memory-free and credential-free: no persistence backend is selected. For a local persistence smoke test, use `PERSISTENCE=memory npm run serve`; this exercises the same lifecycle without contacting Google Cloud. For production, configure:
+With `PERSISTENCE` unset, `src/server.ts` selects no persistence backend at all: a run lives only in the responding process, and no credentials are involved. `.env.example` sets `PERSISTENCE=memory`, which exercises the full persistence lifecycle in process — use `PERSISTENCE=memory npm run serve` for a local smoke test without contacting Google Cloud. For production, configure:
 
 ```powershell
 $env:PERSISTENCE = 'cloud'
